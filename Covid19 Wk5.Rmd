@@ -1,0 +1,174 @@
+---
+title: "COVID 19 Analysis"
+author: "AD"
+date: '2022-06-20'
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r library, message=FALSE, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(lubridate)
+```
+
+# Data Import
+
+The data is obtained from the Data Data Repository by the Center for Systems Science and Engineering (CSSE) at Johns Hopkins University. It agregates data from several sources such as the World Health Organization, the European Centre for Disease Prevention and Control, and the United States Center for Disease Control. 
+The data can be accessed through the link below and more data can be found here: <https://doi.org/10.1016/S1473-3099(20)30120-1>.
+
+
+```{r link_import}
+url.in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+file.names <- c(
+"time_series_covid19_confirmed_global.csv",
+"time_series_covid19_deaths_global.csv")
+
+urls <- str_c(url.in,file.names)
+```
+
+# Data Selection
+
+For our analysis we will look at cumulative cases of COVID19 around the globe; we will therefore use the data linked on the global cases and global deaths urls.
+
+```{r import_data, eval=TRUE}
+global.cases <- read_csv(urls[1])
+global.deaths <- read_csv(urls[2])
+```
+
+```{r tidy_global_cases}
+## Pivot everything expect -Province, Country, Lat, Long- and put it into "Dates"
+## and aggregate corresponding values to "Cases"
+
+g.cases <- global.cases %>% 
+  pivot_longer(cols = -c('Province/State', 'Country/Region', Lat, Long), 
+               names_to = "date", values_to = "cases") %>% 
+  select(-c(Lat, Long))
+```
+
+```{r tidy_global_deaths}
+g.deaths <- global.deaths %>% 
+  pivot_longer(cols = -c('Province/State', 'Country/Region', Lat, Long), 
+               names_to = "date", values_to = "deaths") %>%  
+  select(-c(Lat, Long))
+```
+
+```{r tidy_global_total, message=FALSE, warning=FALSE}
+global <- g.cases %>% 
+  full_join(g.deaths) %>% 
+  rename(Country = `Country/Region`, State = `Province/State`) %>% 
+  mutate(date = mdy(date)) %>% 
+  filter(cases > 0)
+```
+# Additional Data
+
+Population data is available from the same repository so we import that and we make a note of how data is displayed.
+
+```{r}
+uid.lookup.url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+#uid <- 
+  
+uid <- read_csv(uid.lookup.url) %>% 
+  select(-(UID:Admin2)) %>% 
+  select(-c(Lat, Long_)) %>% 
+  rename(Country = 'Country_Region', State = 'Province_State') %>% 
+  select(Country, State, Population)
+```
+
+### Note about the Population data in UID
+One thing to notice about the population data is that, for countries divided by states or provinces, there is a row that shows total population.
+For demonstration of this fact, a filter is created for the country and all the non-NA values are summed; then the value is compared to the top valued  row for the simple country name filter.
+
+```{r}
+uid %>% filter(Country == "Canada" & !is.na(State) & !is.na(Population)) %>% 
+  group_by(Country) %>% 
+  summarise(Population = sum(Population))
+
+uid %>% filter(Country == "Canada") %>% slice_max(Population)
+```
+
+Once we have determined the data format we import it to our dataframe.
+
+```{r}
+uid <- read_csv(uid.lookup.url) %>% 
+  select(-(UID:Admin2)) %>% 
+  select(-c(Lat, Long_)) %>% 
+  rename(Country = 'Country_Region', State = 'Province_State') %>% 
+  select(Country, State, Population) %>% 
+  filter(is.na(State) & !is.na(Population)) %>% 
+  select(Country, Population)
+```
+
+We create a vector of the five leading countries in cumulative cases of covid19 to look at them in more detail.
+
+```{r}
+comp.global <- global %>% left_join(uid, by = "Country")
+
+top.cases <- comp.global %>% 
+  group_by(Country) %>% 
+  summarise(total = sum(cases)) %>% 
+ slice_max(total, n = 5) %>% 
+  select(Country)
+
+cases.vec <- deframe(top.cases)
+```
+
+As can be seen in the graph below, the total cases in the US seem to be the highest as of July 2022; this is consistent to data obtained
+by a web search. The Total reported cases in the US acording to usfacts.org ( <https://usafacts.org/visualizations/coronavirus-covid-19-spread-map/>) is estimated to be 83,583,362.
+
+```{r message=FALSE, warning=FALSE}
+comp.global %>% 
+  filter(Country %in% cases.vec) %>%
+  group_by(Country, month = lubridate::ceiling_date(date, 'month')) %>%
+  ggplot(aes(x = date, y = cases, color = Country))+
+  geom_point(aes(x = month, y = cases))+
+  labs(title = "Cumulative cases in leading countries by Number of Cases", y = NULL)
+```
+
+Looking at the cumulative deaths we see a similar value to that estimated on the web at around 1,003,342 deaths.
+
+
+```{r message=FALSE, warning=FALSE}
+comp.global %>% 
+  filter(Country %in% cases.vec) %>% 
+  group_by(Country, month = lubridate::floor_date(date, 'month')) %>% 
+  ggplot(aes(x = month, y = deaths, color = Country))+
+  geom_point(aes(x = month, y = deaths))+
+  labs(title = "Cumulative deaths in leading countries by Number of Cases", y = NULL)
+```
+
+# Linear Model for US cases
+
+```{r linear_model}
+US.data <- comp.global %>% filter(Country == "US")
+mod <- lm( cases ~ date, data = US.data)
+summary(mod)
+```
+
+```{r}
+
+US.data %>% 
+  mutate(pred = predict(mod)) %>%  
+  ggplot(aes(x = date, y = cases)) + 
+  geom_line(aes(x = date, y = cases)) + 
+  geom_line(aes(x = date, y = pred), color = 'blue') +  
+  labs(title = "Linear Model of US cases", y = NULL)
+
+```
+
+# Conclusion
+
+Cases of COVID and in the US have reached astonishingly high numbers. When compared to other countries one could, without recurring to statistical tools that there are a large contagion numbers that have not yet started a decline or stabilization.
+
+Addressing the topic of bias, when dealing with data from different countries, most of which are self reported it is very difficult to draw a clear picture of how reliable the data can be. Politics and the interest for optics might easily result in manipulated numbers; living in a country where mass under-reporting has been documented makes not only the data vulnerable to bias but also the analysis as one may tend to thread carefuly and even distrust the results when taking many countries into consideration.
+
+
+```{r}
+sessionInfo()
+```
+
+
+
+
+
